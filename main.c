@@ -104,7 +104,7 @@ int main(void)
 
         size_t offset = strtol(cmd, NULL, 0);
         for (int i = 0; i < 20; i++) {
-            printf("%p  ", (void*)(offset));
+            printf("0x%016x  ", (unsigned int)(offset + i*16));
             for (int j = 0; j < 16; j++) {
                 char* ptr = shm_buf + offset + i*16 + j;
                 size_t lo = ((unsigned)(*ptr) & 0x0F) >> 0;
