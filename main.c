@@ -7,37 +7,8 @@
 #include <string.h>
 
 #define MB ((size_t)(1<<20))
-#define KB ((size_t)(1<<10))
+#define DISK ((size_t)100 * MB)            // 100MB
 
-#define DISK          ((size_t)100 * MB)            // 100MB
-#define SECTOR_SIZE   ((size_t)512)                 // 512B
-#define CLUSTER_SIZE  ((size_t)8 * SECTOR_SIZE)     // 4KB
-#define FAT_COUNT     (DISK / CLUSTER_SIZE)         // 25600
-#define FAT_SIZE      ((size_t)4 * FAT_COUNT)       // 100KB
-#define DBR_SIZE      ((size_t)sizeof(struct DBR))
-
-
-struct DBR
-{
-    char flag[32];
-    int sector_size;
-    int cluster_size;
-    int fat_count;
-    int fat_size;
-};
-
-struct FAT
-{
-    int cluster[FAT_COUNT];
-};
-
-struct FCB
-{
-    char filename[32];
-    int size;
-    int cluster;
-    char time[16];  // yyyy-mm-dd-hh-mm-ss
-};
 
 int get_shm(void** pshm_buf, int* pshm_id)
 {
@@ -69,19 +40,6 @@ void rm_shm(void* shm_buf, int shm_id)
     shmctl(shm_id, IPC_RMID, NULL);
 }
 
-void init_disk(void* buffer)
-{
-    struct DBR dbr;
-    memset(&dbr, 0, DBR_SIZE);
-
-    strcpy(dbr.flag, "zheng_rui_kun_2019151030");
-    dbr.sector_size = SECTOR_SIZE;
-    dbr.cluster_size = CLUSTER_SIZE;
-    dbr.fat_count = FAT_COUNT;
-    dbr.fat_size = FAT_SIZE;
-
-    memcpy(buffer, &dbr, DBR_SIZE);
-}
 
 int main(void)
 {
@@ -92,7 +50,6 @@ int main(void)
 
     // initialize disk ------------------------------
     void* disk_buffer = shm_buf;
-    init_disk(disk_buffer);
 
     // get disk data
     char cmd[256];
