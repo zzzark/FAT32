@@ -81,6 +81,12 @@ void init_disk(void* buffer)
     dbr.fat_size = FAT_SIZE;
 
     memcpy(buffer, &dbr, DBR_SIZE);
+
+    int* fat1 = ((struct FAT*)(buffer + DBR_SIZE))->cluster;
+    int* fat2 = ((struct FAT*)(buffer + DBR_SIZE + FAT_SIZE))->cluster;
+
+    fat1[0] = fat2[0] = 0xffffffff;
+    fat1[1] = fat2[1] = 0xffffff0f;
 }
 
 int main(void)
@@ -94,40 +100,7 @@ int main(void)
     void* disk_buffer = shm_buf;
     init_disk(disk_buffer);
 
-    // get disk data
-    char cmd[256];
 
-    while (1) {
-        scanf("%s", cmd);
-        if (0 == strcmp(cmd, "exit"))
-            break;
-
-        size_t offset = strtol(cmd, NULL, 0);
-        for (int i = 0; i < 20; i++) {
-            printf("0x%016x  ", (unsigned int)(offset + i*16));
-            for (int j = 0; j < 16; j++) {
-                char* ptr = shm_buf + offset + i*16 + j;
-                size_t lo = ((unsigned)(*ptr) & 0x0F) >> 0;
-                size_t hi = ((unsigned)(*ptr) & 0xF0) >> 4;
-                char* hex_table = "0123456789ABCDEF";
-                printf("%c%c ", hex_table[hi], hex_table[lo]);
-                if ((j+1) % 8 == 0) printf(" ");
-            }
-            printf("  |  ");
-            for (int j = 0; j < 16; j++) {
-                char* ptr = shm_buf + offset + i*16 + j;
-                if (isprint(*ptr))
-                    printf("%c", *ptr);
-                else
-                    printf("%c", '.');
-                if ((j+1) % 8 == 0) printf(" ");
-            }
-            printf("\n");
-        }
-    }
-
-    // release buffer
-    rm_shm(shm_buf, shm_id);
     return 0;
 }
 
