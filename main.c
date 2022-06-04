@@ -72,6 +72,8 @@ void rm_shm(void* shm_buf, int shm_id)
 void init_disk(void* buffer)
 {
     struct DBR dbr;
+    memset(&dbr, 0, DBR_SIZE);
+
     strcpy(dbr.flag, "zheng_rui_kun_2019151030");
     dbr.sector_size = SECTOR_SIZE;
     dbr.cluster_size = CLUSTER_SIZE;
