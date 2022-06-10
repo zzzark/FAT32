@@ -33,7 +33,7 @@ struct FAT
     uint cluster[FAT_COUNT];
 };
 
-struct DirectoryEntity // SIZE == 64B
+struct FCB // SIZE == 64B
 {
     char filename[32];
     char time[16];   // yyyymmdd hhmmss
@@ -42,7 +42,6 @@ struct DirectoryEntity // SIZE == 64B
     uint cluster;    // first cluster number of this file
 };
 
-char tmp_cluster[CLUSTER_SIZE];
 
 int get_shm(void** pshm_buf, int* pshm_id)
 {
@@ -82,8 +81,8 @@ void* cluster_to_pointer(void* buffer, int cluster)
 
 void write_directory_item(void* memptr, char* filename, uint cluster, int type, int size)
 {
-    struct DirectoryEntity de;
-    memset(&de, 0, sizeof(struct DirectoryEntity));
+    struct FCB de;
+    memset(&de, 0, sizeof(struct FCB));
 
     strcpy(de.filename, filename);
     de.cluster = cluster;
@@ -93,7 +92,7 @@ void write_directory_item(void* memptr, char* filename, uint cluster, int type, 
     time_t now = time(NULL);
     struct tm *ptm = localtime(&now);
     sprintf(de.time, "%04d%02d%02d %02d%02d%02d", ptm->tm_year+1900, ptm->tm_mon+1, ptm->tm_mday, ptm->tm_hour, ptm->tm_min, ptm->tm_sec);
-    memcpy(memptr, &de, sizeof(struct DirectoryEntity));
+    memcpy(memptr, &de, sizeof(struct FCB));
 }
 
 void init_disk(void* buffer)
@@ -122,7 +121,7 @@ void init_disk(void* buffer)
     void* memptr = cluster_to_pointer(buffer, cluster);
     write_directory_item(memptr, "ZRK", 0, 3, 0);  // volume
 
-    memptr += sizeof(struct DirectoryEntity);
+    memptr += sizeof(struct FCB);
     write_directory_item(memptr, ".", cluster, 2, 0);  // current directory
 }
 
@@ -150,22 +149,38 @@ uint get_new_cluster(void* buffer, uint curr_c)
     while (fat1[++next_cl] != 0)  { }
     fat1[curr_c] = next_cl;
     fat1[next_cl] = 0xffffffff;
+    // clear this cluster
+    void* ptr = cluster_to_pointer(buffer, next_cl);
+    memset(ptr, 0, CLUSTER_SIZE);
     return next_cl;
 }
 
+uint get_free_cluster(void* buffer, uint curr_c)
+{
+    uint next_cl = curr_c;
+    uint* fat1 = ((struct FAT*)(buffer + DBR_SIZE))->cluster;
+    uint* fat2 = ((struct FAT*)(buffer + DBR_SIZE + FAT_SIZE))->cluster;
+
+    while (fat1[++next_cl] != 0)  { }
+    // alloc new cluster
+    fat1[next_cl] = fat2[next_cl] = 0xffffffff;
+    return next_cl;
+}
+
+// TODO: untested code
 void append_data_discrete(void* buffer, uint begin_c, void* data, size_t size)
 {
-    struct DirectoryEntity* de = cluster_to_pointer(buffer, begin_c);
+    struct FCB* de = cluster_to_pointer(buffer, begin_c);
     uint cluster = get_last_cluster(buffer, begin_c);
     void* memptr = cluster_to_pointer(buffer, cluster);  // last cluster ptr
     size_t allc, rest;
 
     if (de->type == 1) {  // folder
         allc = rest = 0;
-        struct DirectoryEntity* sub = memptr;
-        for (int i = 0; i < CLUSTER_SIZE / sizeof(struct DirectoryEntity); i++) {
+        struct FCB* sub = memptr;
+        for (int i = 0; i < CLUSTER_SIZE / sizeof(struct FCB); i++) {
             if (sub[i].type == 0) {
-                allc = sizeof(struct DirectoryEntity) * (i + 1);
+                allc = sizeof(struct FCB) * (i + 1);
                 rest = CLUSTER_SIZE - allc;
                 break;
             }
@@ -196,8 +211,105 @@ void make_directory_at_ptr(void* buffer, size_t offset, uint cluster, uint p_clu
 {
     void* memptr = cluster_to_pointer(buffer, cluster) + offset;
     write_directory_item(memptr, ".", cluster, 2, 0);
-    memptr += sizeof(struct DirectoryEntity);
+    memptr += sizeof(struct FCB);
     write_directory_item(memptr, "..", p_cluster, 2, 0);
+}
+
+// file exists:  cluster of that file / folder
+// not exists:   0
+uint find_file_at_cluster(void* buffer, uint cluster, char* filename)
+{
+    while (cluster != 0xffffffff) {
+        void* c_ptr = cluster_to_pointer(buffer, cluster);
+
+        size_t offset = 0;
+        while (offset < CLUSTER_SIZE) {
+            struct FCB* fcb = (struct FCB *)(c_ptr + offset);
+            if (fcb->type == 1 || fcb->type == 2)  // is a file or directory
+            {
+                char* name = fcb->filename;
+                if (strcmp(name, filename) == 0) {
+                    return fcb->cluster;
+                }
+            }
+            offset += sizeof(struct FCB);
+        }
+        cluster = get_next_cluster(buffer, cluster);
+    }
+    return 0;
+}
+
+// not found:  0
+// found:      cluster of that file / folder
+uint path_to_cluster(void* buffer, char* path)
+{
+    if (strlen(path) == 1 && path[0] == '/')
+        return 2;  // root
+
+    char cache[1024];
+    strcpy(cache, path);
+    uint cluster = 2;  // start from root "/"
+    char* filename = strtok(cache, "/");
+    while (filename != NULL) {
+        cluster = find_file_at_cluster(buffer, cluster, filename);
+        if (cluster == 0)
+            return 0;
+        filename = strtok(NULL, "/");
+    }
+    return cluster;
+}
+
+int append_fcb_at_cluster(void* buffer, uint cluster, char* filename, int type, int size)
+{
+    if (find_file_at_cluster(buffer, cluster, filename) != 0)
+        return 0;
+
+got_new_block:
+    while (1) {
+        void* c_ptr = cluster_to_pointer(buffer, cluster);
+
+        size_t offset = 0;
+        while (offset < CLUSTER_SIZE) {
+            struct FCB* fcb = (struct FCB *)(c_ptr + offset);
+            if (fcb->type == 0) { // not a file <=> is a free fcb
+                uint free_cluster = get_free_cluster(buffer, cluster);
+                write_directory_item((c_ptr + offset), filename, free_cluster, type, size);
+                return 1;
+            }
+            offset += sizeof(struct FCB);
+        }
+        uint next = get_next_cluster(buffer, cluster);
+        if (next == 0xffffffff) break;
+        cluster = next;
+    }
+    cluster = get_new_cluster(buffer, cluster);
+    goto got_new_block;
+}
+
+// success: 1
+// fail:    0
+int mkdir(void* buffer, char* path)
+{
+    char p_path[1024] = {0};  // parent path
+    char c_file[1024] = {0};  // child file
+    for (size_t i = strlen(path) - 1; i >= 0; i--) {
+        if (path[i] == '/') {
+            strcpy(p_path, path);
+            p_path[i] = 0;
+            strcpy(c_file, &path[i + 1]);
+            break;
+        }
+        if (i == 0) return 0;
+    }
+    if (strlen(p_path) == 0) {
+        p_path[0] = '/';
+        p_path[1] = 0;
+    }
+    uint cluster = path_to_cluster(buffer, p_path);
+    if (cluster == 0) return 0;
+
+    append_fcb_at_cluster(buffer, cluster, c_file, 1, 0);
+    return 1;
 }
 
 
@@ -213,11 +325,19 @@ int main(void)
     init_disk(disk_buffer);
 
     char cmd[256];
+    char param1[256];
     while (1) {
+        printf(">>");
         scanf("%s", cmd);
-
-        if (strcmp(cmd, "exit") == 0)
+        if (strcmp(cmd, "mkdir") == 0) {
+            scanf("%s", param1);
+            printf("making directory [%s] ...\n", param1);
+            mkdir(disk_buffer, param1);
+        }
+        else if (strcmp(cmd, "exit") == 0)
             break;
+        else
+            printf("command not found: %s", cmd);
     }
 
     return 0;
