@@ -122,7 +122,7 @@ void init_disk(void* buffer)
     write_directory_item(memptr, "ZRK", 0, 3, 0);  // volume
 
     memptr += sizeof(struct FCB);
-    write_directory_item(memptr, ".", cluster, 2, 0);  // current directory
+    write_directory_item(memptr, ".", cluster, 1, 0);  // current directory
 }
 
 uint get_next_cluster(void* buffer, uint curr_c)
@@ -210,9 +210,9 @@ void append_data_discrete(void* buffer, uint begin_c, void* data, size_t size)
 void init_directory_at_cluster(void* buffer, uint cluster, uint p_cluster)
 {
     void* memptr = cluster_to_pointer(buffer, cluster);
-    write_directory_item(memptr, ".", cluster, 2, 0);
+    write_directory_item(memptr, ".", cluster, 1, 0);
     memptr += sizeof(struct FCB);
-    write_directory_item(memptr, "..", p_cluster, 2, 0);
+    write_directory_item(memptr, "..", p_cluster, 1, 0);
 }
 
 // file exists:  cluster of that file / folder
@@ -289,13 +289,52 @@ got_new_block:
     goto got_new_block;
 }
 
-// success:       1
-// fail:          0
-// file exists:  -1
-int mkdir(void* buffer, char* path)
+void reset_fat_along_cluster_chain(void* buffer, uint cluster)
 {
-    char p_path[1024] = {0};  // parent path
-    char c_file[1024] = {0};  // child file
+    uint* fat1 = ((struct FAT*)(buffer + DBR_SIZE))->cluster;
+    while (cluster != 0xffffffff) {
+        uint next = fat1[cluster];
+        fat1[cluster] = 0;
+        cluster = next;
+    }
+}
+
+// success:         1
+// not found:       0
+// type not match: -1 (remove file or directory)
+int remove_fcb_at_cluster(void* buffer, uint p_cluster, char* filename, int type)
+{
+    void* c_ptr = cluster_to_pointer(buffer, p_cluster);
+    size_t offset = 0;
+    while (offset < CLUSTER_SIZE) {
+        struct FCB* fcb = (struct FCB *)(c_ptr + offset);
+        if (fcb->type != 3 && fcb->type != 0 && strcmp(fcb->filename, filename) == 0) {
+            if (fcb->type != type)
+                return -1;
+            if (fcb->type == 1) {  // remove directory
+                void* sub_ptr = cluster_to_pointer(buffer, fcb->cluster);
+                size_t sub_off = 2 * sizeof(struct FCB);  // ignore "." and ".."
+                while (sub_off < CLUSTER_SIZE) {
+                    struct FCB* sub_fcb = (struct FCB *)(sub_ptr + sub_off);
+                    remove_fcb_at_cluster(buffer, fcb->cluster, sub_fcb->filename, sub_fcb->type);
+                    sub_off += sizeof(struct FCB);
+                }
+            }
+            reset_fat_along_cluster_chain(buffer, fcb->cluster);
+            memset(fcb, 0, sizeof(struct FCB));
+            return 1;
+        }
+        offset += sizeof(struct FCB);
+    }
+    return 0;
+}
+
+// =========================================== COMMAND IMPLEMENTATION =========================================== //
+
+// invalid:  0
+// valid:    1
+int split_path(char* path, char* p_path, char* c_file)
+{
     for (size_t i = strlen(path) - 1; i >= 0; i--) {
         if (path[i] == '/') {
             strcpy(p_path, path);
@@ -309,6 +348,18 @@ int mkdir(void* buffer, char* path)
         p_path[0] = '/';
         p_path[1] = 0;
     }
+    return 1;
+}
+
+// success:       1
+// fail:          0
+// file exists:  -1
+int mkdir_(void* buffer, char* path)
+{
+    char p_path[1024] = {0};  // parent path
+    char c_file[1024] = {0};  // child file
+    if (split_path(path, p_path, c_file) == 0)
+        return 0;
     uint cluster = path_to_cluster(buffer, p_path);
     if (cluster == 0) return 0;
 
@@ -316,6 +367,66 @@ int mkdir(void* buffer, char* path)
     if (c_cl == 0)
         return -1;
     init_directory_at_cluster(buffer, c_cl, cluster);
+    return 1;
+}
+
+// success:          1
+// fail:             0
+// file not found:  -1
+// not match:        2
+int rmdir_(void* buffer, char* path)
+{
+    char p_path[1024] = {0};  // parent path
+    char c_file[1024] = {0};  // child file
+    if (split_path(path, p_path, c_file) == 0)
+        return 0;
+    uint cluster = path_to_cluster(buffer, p_path);
+    if (cluster == 0)
+        return -1;
+    int r = remove_fcb_at_cluster(buffer, cluster, c_file, 1);
+    if (r == 0) return -1;
+    if (r == -1) return 2;
+    return 1;
+}
+
+// success:          1
+// fail:             0
+// file not found:  -1
+// not match:        2
+int rm_(void* buffer, char* path)
+{
+    char p_path[1024] = {0};  // parent path
+    char c_file[1024] = {0};  // child file
+    if (split_path(path, p_path, c_file) == 0)
+        return 0;
+    uint cluster = path_to_cluster(buffer, p_path);
+    if (cluster == 0)
+        return -1;
+    int r = remove_fcb_at_cluster(buffer, cluster, c_file, 2);
+    if (r == 0) return -1;
+    if (r == -1) return 2;
+    return 1;
+}
+
+// success:         1
+// not a directory: 0
+int ls_(void* buffer, char* path)
+{
+    uint cluster = path_to_cluster(buffer, path);
+    struct FCB* this_fcb = (struct FCB*)cluster_to_pointer(buffer, cluster);
+    if (this_fcb->type != 3 && this_fcb->type != 1)
+        return 0;
+    void* c_ptr = cluster_to_pointer(buffer, cluster);
+    size_t offset = 0;
+    while (offset < CLUSTER_SIZE) {
+        struct FCB* fcb = (struct FCB *)(c_ptr + offset);
+        if (fcb->type == 1) {
+            printf("[D]%s  \n", fcb->filename);
+        } else if (fcb->type == 2) {
+            printf("[F]%s  \n", fcb->filename);
+        }
+        offset += sizeof(struct FCB);
+    }
     return 1;
 }
 
@@ -339,18 +450,34 @@ int main(void)
         if (strcmp(cmd, "mkdir") == 0) {
             scanf("%s", param1);
             printf("making directory [%s] ...\n", param1);
-            int ret = mkdir(disk_buffer, param1);
+            int ret = mkdir_(disk_buffer, param1);
             if (ret == 0)
                 printf("error!\n");
             if (ret == -1)
                 printf("file already exists!\n");
         }
+        else if (strcmp(cmd, "rmdir") == 0) {
+            scanf("%s", param1);
+            printf("removing directory [%s] ...\n", param1);
+            int ret = rmdir_(disk_buffer, param1);
+            if (ret == 0)
+                printf("error!\n");
+            if (ret == -1)
+                printf("file not found!\n");
+            if (ret == 2)
+                printf("this is a file\n");
+        }
+        else if (strcmp(cmd, "ls") == 0) {
+            scanf("%s", param1);
+            int ret = ls_(disk_buffer, param1);
+            if (ret == 0)
+                printf("not a directory!\n");
+        }
         else if (strcmp(cmd, "exit") == 0)
             break;
         else
-            printf("command not found: %s", cmd);
+            printf("command not found: %s\n", cmd);
     }
-
     return 0;
 }
 
