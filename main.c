@@ -95,6 +95,32 @@ void write_directory_item(void* memptr, char* filename, uint cluster, int type, 
     memcpy(memptr, &de, sizeof(struct FCB));
 }
 
+char* time_format(char*format, const char* time)
+{
+    format[0] = time[0];  // y
+    format[1] = time[1];  // y
+    format[2] = time[2];  // y
+    format[3] = time[3];  // y
+    format[4] = '-';
+    format[5] = time[4];  // m
+    format[6] = time[5];  // m
+    format[7] = '-';
+    format[8] = time[6];  // d
+    format[9] = time[7];  // d
+    format[10] = ' ';
+    format[11] = time[9];  // h
+    format[12] = time[10];  // h
+    format[13] = ':';
+    format[14] = time[11];  // m
+    format[15] = time[12];  // m
+    format[16] = ':';
+    format[17] = time[13];  // s
+    format[18] = time[14];  // s
+    format[19] = 0;
+    return format;
+}
+
+
 void init_disk(void* buffer)
 {
     struct DBR dbr;
@@ -167,8 +193,9 @@ uint get_free_cluster(void* buffer, uint curr_c)
     return next_cl;
 }
 
-// TODO: untested code
-void append_data_discrete(void* buffer, uint begin_c, void* data, size_t size)
+// TODO: tested for type == 2
+// return: file size
+size_t append_data_discrete(void* buffer, uint begin_c, void* data, size_t size)
 {
     struct FCB* de = cluster_to_pointer(buffer, begin_c);
     uint cluster = get_last_cluster(buffer, begin_c);
@@ -191,7 +218,7 @@ void append_data_discrete(void* buffer, uint begin_c, void* data, size_t size)
         if (used == 0) used = de->size == 0 ? 0 : CLUSTER_SIZE;
         rest = CLUSTER_SIZE - used;
     }
-    else return;
+    else return de->size;
 
     if (rest > size) {
         memcpy(c_ptr + used, data, size);
@@ -206,6 +233,7 @@ void append_data_discrete(void* buffer, uint begin_c, void* data, size_t size)
         memcpy(ptr2, data + used, part2);
     }
     de->size += size;
+    return de->size;
 }
 
 void init_directory_at_cluster(void* buffer, uint cluster, uint p_cluster)
@@ -298,6 +326,20 @@ void reset_fat_along_cluster_chain(void* buffer, uint cluster)
         fat1[cluster] = 0;
         cluster = next;
     }
+}
+
+struct FCB* get_fcb_of_file_at_cluster(void* buffer, uint cluster, char* filename)
+{
+    void* c_ptr = cluster_to_pointer(buffer, cluster);
+    size_t offset = 0;
+    while (offset < CLUSTER_SIZE) {
+        struct FCB* fcb = (struct FCB *)(c_ptr + offset);
+        if (fcb->type != 3 && fcb->type != 0 && strcmp(fcb->filename, filename) == 0) {
+            return fcb;
+        }
+        offset += sizeof(struct FCB);
+    }
+    return NULL;
 }
 
 // success:         1
@@ -432,7 +474,9 @@ int open_(void* buffer, char* path)
     char data[1024];
     scanf("%s", data);
     printf("writing data: [%s]\n", data);
-    append_data_discrete(buffer, c_cl, data, strlen(data));
+    size_t f_size = append_data_discrete(buffer, c_cl, data, strlen(data));
+    struct FCB* fcb = get_fcb_of_file_at_cluster(buffer, cluster, c_file);
+    fcb->size = f_size;
     return 1;
 }
 
@@ -452,7 +496,9 @@ int append_(void* buffer, char* path, char ch, size_t size)
     uint c_cl = find_file_at_cluster(buffer, cluster, c_file);
     char* data = malloc(size);
     memset(data, ch, size);
-    append_data_discrete(buffer, c_cl, data, size);
+    size_t f_size = append_data_discrete(buffer, c_cl, data, size);
+    struct FCB* fcb = get_fcb_of_file_at_cluster(buffer, cluster, c_file);
+    fcb->size = f_size;
     free(data);
     return 1;
 }
@@ -470,10 +516,11 @@ int ls_(void* buffer, char* path)
     size_t offset = 0;
     while (offset < CLUSTER_SIZE) {
         struct FCB* fcb = (struct FCB *)(c_ptr + offset);
+        char t_fmt[256];
         if (fcb->type == 1) {
-            printf("[D]%s  \n", fcb->filename);
+            printf("[D]%-10s\t%8zu\t%s\n", fcb->filename, fcb->size, time_format(t_fmt, fcb->time));
         } else if (fcb->type == 2) {
-            printf("[F]%s  \n", fcb->filename);
+            printf("[F]%-10s\t%8zu\t%s\n", fcb->filename, fcb->size, time_format(t_fmt, fcb->time));
         }
         offset += sizeof(struct FCB);
     }
