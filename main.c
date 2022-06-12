@@ -515,6 +515,8 @@ int ls_(void* buffer, char* path)
         return 0;
     void* c_ptr = cluster_to_pointer(buffer, cluster);
     size_t offset = 0;
+    printf("%-13s\t%8s\t%s\n", "name", "size", "created time");
+    printf("-------------\t--------\t-------------------\n");
     while (offset < CLUSTER_SIZE) {
         struct FCB* fcb = (struct FCB *)(c_ptr + offset);
         char t_fmt[256];
