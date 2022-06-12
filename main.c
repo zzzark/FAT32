@@ -172,39 +172,40 @@ void append_data_discrete(void* buffer, uint begin_c, void* data, size_t size)
 {
     struct FCB* de = cluster_to_pointer(buffer, begin_c);
     uint cluster = get_last_cluster(buffer, begin_c);
-    void* memptr = cluster_to_pointer(buffer, cluster);  // last cluster ptr
-    size_t allc, rest;
+    void* c_ptr = cluster_to_pointer(buffer, cluster);  // last cluster ptr
+    size_t used, rest;
 
     if (de->type == 1) {  // folder
-        allc = rest = 0;
-        struct FCB* sub = memptr;
+        used = rest = 0;  // already used size
+        struct FCB* sub = c_ptr;
         for (int i = 0; i < CLUSTER_SIZE / sizeof(struct FCB); i++) {
             if (sub[i].type == 0) {
-                allc = sizeof(struct FCB) * (i + 1);
-                rest = CLUSTER_SIZE - allc;
+                used = sizeof(struct FCB) * (i + 1);
+                rest = CLUSTER_SIZE - used;
                 break;
             }
         }
     }
     else if (de->type == 2) {  // file
-        allc = (de->size % CLUSTER_SIZE);
-        if (allc == 0) allc = de->size == 0 ? 0 : CLUSTER_SIZE;
-        rest = CLUSTER_SIZE - allc;
+        used = (sizeof(struct FCB) + de->size) % CLUSTER_SIZE;
+        if (used == 0) used = de->size == 0 ? 0 : CLUSTER_SIZE;
+        rest = CLUSTER_SIZE - used;
     }
     else return;
 
     if (rest > size) {
-        memcpy(memptr+allc, data, size);
+        memcpy(c_ptr + used, data, size);
     } else {
         size_t part1 = rest;
         size_t part2 = size - rest;
         uint new_c = get_new_cluster(buffer, cluster);
-        void* ptr1 = memptr;
+        void* ptr1 = c_ptr;
         void* ptr2 = cluster_to_pointer(buffer, new_c);
 
-        memcpy(ptr1+allc, data, part1);
-        memcpy(ptr2, data+allc, part2);
+        memcpy(ptr1 + used, data, part1);
+        memcpy(ptr2, data + used, part2);
     }
+    de->size += size;
 }
 
 void init_directory_at_cluster(void* buffer, uint cluster, uint p_cluster)
@@ -408,6 +409,55 @@ int rm_(void* buffer, char* path)
     return 1;
 }
 
+// success:          1
+// file exists:      0
+// file not found:  -1
+int open_(void* buffer, char* path)
+{
+    char p_path[1024] = {0};  // parent path
+    char c_file[1024] = {0};  // child file
+    if (split_path(path, p_path, c_file) == 0)
+        return -1;
+    uint cluster = path_to_cluster(buffer, p_path);
+    if (cluster == 0)
+        return -1;
+
+    uint c_cl = append_fcb_at_cluster(buffer, cluster, c_file, 2, 0);
+    if (c_cl == 0)
+        return 0;
+    void* memptr = cluster_to_pointer(buffer, c_cl);
+    write_directory_item(memptr, c_file, c_cl, 2, 0);
+    printf("append data:");
+    fflush(stdout);
+    char data[1024];
+    scanf("%s", data);
+    printf("writing data: [%s]\n", data);
+    append_data_discrete(buffer, c_cl, data, strlen(data));
+    return 1;
+}
+
+// success:          1
+// file not found:   0
+// path not found:  -1
+int append_(void* buffer, char* path, char ch, size_t size)
+{
+    char p_path[1024] = {0};  // parent path
+    char c_file[1024] = {0};  // child file
+    if (split_path(path, p_path, c_file) == 0)
+        return 0;
+    uint cluster = path_to_cluster(buffer, p_path);
+    if (cluster == 0)
+        return -1;
+
+    uint c_cl = find_file_at_cluster(buffer, cluster, c_file);
+    char* data = malloc(size);
+    memset(data, ch, size);
+    append_data_discrete(buffer, c_cl, data, size);
+    free(data);
+    return 1;
+}
+
+
 // success:         1
 // not a directory: 0
 int ls_(void* buffer, char* path)
@@ -446,6 +496,7 @@ int main(void)
     char param1[256];
     while (1) {
         printf(">>");
+        fflush(stdout);
         scanf("%s", cmd);
         if (strcmp(cmd, "mkdir") == 0) {
             scanf("%s", param1);
@@ -473,8 +524,41 @@ int main(void)
             if (ret == 0)
                 printf("not a directory!\n");
         }
-        else if (strcmp(cmd, "exit") == 0)
+        else if (strcmp(cmd, "open") == 0) {
+            scanf("%s", param1);
+            int ret = open_(disk_buffer, param1);
+            if (ret == 0)
+                printf("file already exists!\n");
+            if (ret == -1)
+                printf("path not found!\n");
+        }
+        else if (strcmp(cmd, "append") == 0) {
+            scanf("%s", param1);
+            char ch[256];  uint size;
+            printf("char:\n");
+            scanf("%s", ch);
+            printf("size:\n");
+            scanf("%u", &size);
+            int ret = append_(disk_buffer, param1, ch[0], size);
+            if (ret == -1)
+                printf("path not found!\n");
+            if (ret == 0)
+                printf("file not found!\n");
+        }
+        else if (strcmp(cmd, "rm") == 0) {
+            scanf("%s", param1);
+            int ret = rm_(disk_buffer, param1);
+            if (ret == 0)
+                printf("error!\n");
+            if (ret == -1)
+                printf("file not found!\n");
+            if (ret == 2)
+                printf("not a file!\n");
+
+        }
+        else if (strcmp(cmd, "exit") == 0) {
             break;
+        }
         else
             printf("command not found: %s\n", cmd);
     }
