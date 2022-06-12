@@ -509,6 +509,7 @@ int append_(void* buffer, char* path, char ch, size_t size)
 int ls_(void* buffer, char* path)
 {
     uint cluster = path_to_cluster(buffer, path);
+    if (cluster == 0) return 0;
     struct FCB* this_fcb = (struct FCB*)cluster_to_pointer(buffer, cluster);
     if (this_fcb->type != 3 && this_fcb->type != 1)
         return 0;
@@ -527,6 +528,26 @@ int ls_(void* buffer, char* path)
     return 1;
 }
 
+// success:        1
+// not exists:    -1
+int rename_(void* buffer, char* path, char* new_name)
+{
+    char p_path[1024] = {0};  // parent path
+    char c_file[1024] = {0};  // child file
+    if (split_path(path, p_path, c_file) == 0)
+        return -1;
+    uint p_cl = path_to_cluster(buffer, p_path);
+    struct FCB* fcb = get_fcb_of_file_at_cluster(buffer, p_cl, c_file);
+    if (fcb == NULL) return -1;
+    uint c_cl = fcb->cluster;
+    strcpy(fcb->filename, new_name);
+    if (fcb->type == 2) {
+        struct FCB* c_fcb = cluster_to_pointer(buffer, c_cl);
+        strcpy(c_fcb->filename, new_name);
+    }
+    return 1;
+}
+
 
 int main(void)
 {
@@ -541,6 +562,7 @@ int main(void)
 
     char cmd[256];
     char param1[256];
+    char param2[256];
     while (1) {
         printf(">>");
         fflush(stdout);
@@ -601,7 +623,13 @@ int main(void)
                 printf("file not found!\n");
             if (ret == 2)
                 printf("not a file!\n");
-
+        }
+        else if (strcmp(cmd, "rename") == 0) {
+            scanf("%s", param1);
+            scanf("%s", param2);
+            int ret = rename_(disk_buffer, param1, param2);
+            if (ret == -1)
+                printf("file not found!\n");
         }
         else if (strcmp(cmd, "exit") == 0) {
             break;
