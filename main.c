@@ -771,12 +771,20 @@ int main(void)
         }
         else if (strcmp(cmd, "write") == 0) {
             scanf("%s", param1);
+            struct Mutex* mutex = get_mutex(param1);
+            printf("writer: begin writing ...\n");
+            wait_writer(mutex);
+
             char ch[256];  uint size;
             printf("char:\n");
             scanf("%s", ch);
             printf("size:\n");
             scanf("%u", &size);
+
             int ret = write_(disk_buffer, param1, ch[0], size);
+            post_writer(mutex);
+            printf("writer: finish!\n");
+
             if (ret == -1)
                 printf("path not found!\n");
             if (ret == 0)
@@ -784,7 +792,15 @@ int main(void)
         }
         else if (strcmp(cmd, "read") == 0) {
             scanf("%s", param1);
+            struct Mutex* mutex = get_mutex(param1);
+            printf("reader: begin reading ...\n");
+            wait_reader(mutex);
             int ret = read_(disk_buffer, param1);
+            printf("reader: press enter to continue ...\n");
+            scanf("%s", param1);
+            post_reader(mutex);
+            printf("reader: finish!\n");
+
             if (ret == 0)
                 printf("error!\n");
             if (ret == -1)
