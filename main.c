@@ -611,6 +611,40 @@ int open_(void* buffer, char* path)
 }
 
 // success:          1
+// not a file:       2
+// file not found:  -1
+int read_(void* buffer, char* path)
+{
+    uint cluster = path_to_cluster(buffer, path);
+    if (cluster == 0)
+        return -1;
+
+    void* ptr = cluster_to_pointer(buffer, cluster);
+    struct FCB* fcb = ptr;
+    if (fcb->type == 1)
+        return 2;
+
+    size_t size = fcb->size;
+
+
+    char* data = malloc((size / CLUSTER_SIZE + 1) * CLUSTER_SIZE);
+    char* d_ptr = data;
+    char* cont = d_ptr + sizeof(struct FCB);
+
+    while (cluster != 0xffffffff) {
+        memcpy(d_ptr, cluster_to_pointer(buffer, cluster), CLUSTER_SIZE);
+        d_ptr += CLUSTER_SIZE;
+        cluster = get_next_cluster(buffer, cluster);
+    }
+
+    cont[size + 1] = 0;
+    printf("%s\n", cont);
+
+    free(data);
+    return 1;
+}
+
+// success:          1
 // file not found:   0
 // path not found:  -1
 int append_(void* buffer, char* path, char ch, size_t size)
@@ -684,20 +718,7 @@ int rename_(void* buffer, char* path, char* new_name)
 int main(void)
 {
     init_mutex();
-    struct Mutex* mutex = get_mutex("/aa");
-    
-    printf("writer: getting mutex\n");
-    wait_writer(mutex);
 
-    printf("writer: writing\n");
-    char temp[222];
-    scanf("%s", temp);
-
-    post_writer(mutex);
-    printf("writer: done\n");
-
-    release_mutex();
-    return 0;
     // allocate buffer for disk ------------------------------
     int shm_id = 0;
     void* shm_buf = NULL;
@@ -761,6 +782,16 @@ int main(void)
             if (ret == 0)
                 printf("file not found!\n");
         }
+        else if (strcmp(cmd, "read") == 0) {
+            scanf("%s", param1);
+            int ret = read_(disk_buffer, param1);
+            if (ret == 0)
+                printf("error!\n");
+            if (ret == -1)
+                printf("file not found!\n");
+            if (ret == 2)
+                printf("not a file!\n");
+        }
         else if (strcmp(cmd, "rm") == 0) {
             scanf("%s", param1);
             int ret = rm_(disk_buffer, param1);
@@ -784,6 +815,8 @@ int main(void)
         else
             printf("command not found: %s\n", cmd);
     }
+
+    release_mutex();
     return 0;
 }
 
