@@ -686,15 +686,15 @@ int main(void)
     init_mutex();
     struct Mutex* mutex = get_mutex("/aa");
     
-    printf("reader: getting mutex\n");
-    wait_reader(mutex);
+    printf("writer: getting mutex\n");
+    wait_writer(mutex);
 
-    printf("reader: reading\n");
+    printf("writer: writing\n");
     char temp[222];
     scanf("%s", temp);
 
-    post_reader(mutex);
-    printf("reader: done\n");
+    post_writer(mutex);
+    printf("writer: done\n");
 
     release_mutex();
     return 0;
