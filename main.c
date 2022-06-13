@@ -647,7 +647,7 @@ int read_(void* buffer, char* path)
 // success:          1
 // file not found:   0
 // path not found:  -1
-int append_(void* buffer, char* path, char ch, size_t size)
+int write_(void* buffer, char* path, char ch, size_t size)
 {
     char p_path[1024] = {0};  // parent path
     char c_file[1024] = {0};  // child file
@@ -769,14 +769,14 @@ int main(void)
             if (ret == -1)
                 printf("path not found!\n");
         }
-        else if (strcmp(cmd, "append") == 0) {
+        else if (strcmp(cmd, "write") == 0) {
             scanf("%s", param1);
             char ch[256];  uint size;
             printf("char:\n");
             scanf("%s", ch);
             printf("size:\n");
             scanf("%u", &size);
-            int ret = append_(disk_buffer, param1, ch[0], size);
+            int ret = write_(disk_buffer, param1, ch[0], size);
             if (ret == -1)
                 printf("path not found!\n");
             if (ret == 0)
