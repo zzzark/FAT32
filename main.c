@@ -6,6 +6,11 @@
 #include <sys/shm.h>
 #include <string.h>
 #include <time.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <semaphore.h>
 
 #define MB ((size_t)(1<<20))
 #define KB ((size_t)(1<<10))
@@ -43,16 +48,19 @@ struct FCB // SIZE == 64B
 };
 
 
-int get_shm(void** pshm_buf, int* pshm_id)
+int get_shm(void** pshm_buf, int* pshm_id, char* file, size_t size)
 {
-    system("touch /tmp/zrk.shm");
-    int shm_key = ftok("/tmp/zrk.shm", 0);
+    char temp[256];
+    sprintf(temp, "touch /tmp/%s", file);
+    system(temp);
+    sprintf(temp, "/tmp/%s", file);
+    int shm_key = ftok(temp, 0);
     if (shm_key == -1) {
         printf("Cannot get shm key.");
         return -1;
     }
 
-    int shm_id = shmget(shm_key, DISK, 0666 | IPC_CREAT);
+    int shm_id = shmget(shm_key, size, 0666 | IPC_CREAT);
     void* shm_buf = shmat(shm_id, NULL, 0);
 
     printf("shmid is %d \n", shm_id);
@@ -71,6 +79,128 @@ void rm_shm(void* shm_buf, int shm_id)
 {
     shmdt(shm_buf);
     shmctl(shm_id, IPC_RMID, NULL);
+}
+
+struct Mutex
+{
+    char path[1024];
+    int count;
+};
+
+#define MUTEX_COUNT 128
+struct Mutex* mutex_list;
+
+void init_mutex()
+{
+    void* shm_buf;
+    int shm_id;
+    get_shm(&shm_buf, &shm_id, "zrk_mutex.shm", sizeof(struct Mutex) * MUTEX_COUNT);
+    mutex_list = shm_buf;
+}
+
+char* replace(char* mutex_path)
+{
+    char* ptr = mutex_path;
+    while (*ptr != 0) {
+        if (*ptr == '/') *ptr = '_';
+        ptr++;
+    }
+    return mutex_path;
+}
+
+void release_mutex()
+{
+    struct Mutex* ptr = mutex_list;
+    for (int i = 0; i < MUTEX_COUNT; i++, ptr++) {
+        if (ptr->path[0] != 0) {
+            char temp[1024];
+            sprintf(temp, "rw_%s", ptr->path);  replace(temp);
+            sem_unlink(temp);
+            sprintf(temp, "r_%s",  ptr->path);  replace(temp);
+            sem_unlink(temp);
+            sprintf(temp, "w_%s",  ptr->path);  replace(temp);
+            sem_unlink(temp);
+            ptr->path[0] = 0;
+        }
+    }
+}
+
+struct Mutex* get_mutex(char* path)
+{
+    // search
+    struct Mutex* ptr = mutex_list;
+    for (int i = 0; i < MUTEX_COUNT; i++, ptr++) {
+        if (strcmp(ptr->path, path) == 0) {
+            return ptr;
+        }
+    }
+
+    // alloc
+    ptr = mutex_list;
+    for (int i = 0; i < MUTEX_COUNT; i++, ptr++) {
+        if (ptr->path[0] == 0) {
+            struct Mutex* new_mutex = ptr;
+            strcpy(new_mutex->path, path);
+            new_mutex->count = 0;
+            return new_mutex;
+        }
+    }
+
+    return NULL;
+}
+
+void mutex_from_path(struct Mutex* mutex, sem_t** rw, sem_t** r, sem_t** w)
+{
+    char* path = mutex->path;
+    char temp[1024];
+    sprintf(temp, "rw_%s", path);  replace(temp);
+    *rw = sem_open(temp, O_CREAT | O_RDWR, 0666, 1);
+    sprintf(temp, "r_%s",  path);  replace(temp);
+    *r  = sem_open(temp, O_CREAT | O_RDWR, 0666, 1);
+    sprintf(temp, "w_%s",  path);  replace(temp);
+    *w  = sem_open(temp, O_CREAT | O_RDWR, 0666, 1);
+}
+
+void wait_reader(struct Mutex* mutex)
+{
+    sem_t *rw, *r, *w;
+    mutex_from_path(mutex, &rw, &r, &w);
+
+    sem_wait(rw);
+    sem_wait(r);
+    if (mutex->count == 0) sem_wait(w);
+    mutex->count++;
+    sem_post(r);
+    sem_post(rw);
+}
+
+void post_reader(struct Mutex* mutex)
+{
+    sem_t *rw, *r, *w;
+    mutex_from_path(mutex, &rw, &r, &w);
+
+    sem_wait(r);
+    mutex->count--;
+    if (mutex->count == 0) sem_post(w);
+    sem_post(r);
+}
+
+void wait_writer(struct Mutex* mutex)
+{
+    sem_t *rw, *r, *w;
+    mutex_from_path(mutex, &rw, &r, &w);
+
+    sem_wait(rw);
+    sem_wait(w);
+}
+
+void post_writer(struct Mutex* mutex)
+{
+    sem_t *rw, *r, *w;
+    mutex_from_path(mutex, &rw, &r, &w);
+
+    sem_post(w);
+    sem_post(rw);
 }
 
 void* cluster_to_pointer(void* buffer, int cluster)
@@ -553,10 +683,25 @@ int rename_(void* buffer, char* path, char* new_name)
 
 int main(void)
 {
+    init_mutex();
+    struct Mutex* mutex = get_mutex("/aa");
+    
+    printf("reader: getting mutex\n");
+    wait_reader(mutex);
+
+    printf("reader: reading\n");
+    char temp[222];
+    scanf("%s", temp);
+
+    post_reader(mutex);
+    printf("reader: done\n");
+
+    release_mutex();
+    return 0;
     // allocate buffer for disk ------------------------------
     int shm_id = 0;
     void* shm_buf = NULL;
-    if (get_shm(&shm_buf, &shm_id) == -1) return 0;
+    if (get_shm(&shm_buf, &shm_id, "zrk.shm", DISK) == -1) return 0;
 
     // initialize disk ------------------------------
     void* disk_buffer = shm_buf;
